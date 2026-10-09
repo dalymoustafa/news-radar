@@ -1,0 +1,44 @@
+name: News radar
+
+on:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: news-radar
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Load memory
+        uses: actions/cache/restore@v5
+        with:
+          path: state
+          key: radar-memory-${{ github.run_id }}
+          restore-keys: radar-memory-
+      - name: Check the news
+        run: python radar.py
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          X_BEARER_TOKEN: ${{ secrets.X_BEARER_TOKEN }}
+      - name: Save memory
+        if: always()
+        uses: actions/cache/save@v5
+        with:
+          path: state
+          key: radar-memory-${{ github.run_id }}-${{ github.run_attempt }}
