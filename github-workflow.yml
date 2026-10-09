@@ -1,0 +1,60 @@
+# This file tells GitHub to run the news radar every 15 minutes.
+# Setup: in your repository, open the "Actions" tab, click "set up a workflow
+# yourself", delete what's in the editor, paste this whole file, then click
+# "Commit changes". (Developers: this is .github/workflows/radar.yml.)
+
+name: News radar
+
+on:
+  schedule:
+    # Every 15 minutes, at :07, :22, :37 and :52. GitHub is busiest on the
+    # hour, so these odd minutes start more reliably. Times are in UTC.
+    # Private repository? Change this to "7,37 * * * *" (every 30 minutes) to
+    # stay inside GitHub's free monthly minutes.
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch: {}   # adds a "Run workflow" button for running it by hand
+
+concurrency:
+  group: news-radar
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      # The radar's memory (what it has already seen and sent) is kept in
+      # GitHub's cache, so it never alerts you twice about the same story.
+      - name: Load memory
+        uses: actions/cache/restore@v5
+        with:
+          path: state
+          key: radar-memory-${{ github.run_id }}
+          restore-keys: radar-memory-
+
+      - name: Check the news
+        run: python radar.py
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          X_BEARER_TOKEN: ${{ secrets.X_BEARER_TOKEN }}
+
+      - name: Save memory
+        if: always()
+        uses: actions/cache/save@v5
+        with:
+          path: state
+          key: radar-memory-${{ github.run_id }}-${{ github.run_attempt }}

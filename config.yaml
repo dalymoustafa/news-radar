@@ -1,0 +1,142 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  NEWS RADAR SETTINGS
+#  You can edit everything in this file. No coding needed.
+#  On GitHub: open this file, click the pencil icon, edit, then "Commit changes".
+#  Keep the indentation (the spaces at the start of lines) as it is.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Times in alerts are shown in this timezone.
+timezone: "Africa/Cairo"
+
+# ── 1. WHAT TO WATCH ─────────────────────────────────────────────────────────
+# Each topic has a list of keywords (exact phrases). The radar searches Google
+# News for each phrase, and Reddit for all of a topic's phrases together.
+# Add or remove lines freely. Each extra keyword adds about one second to every check.
+topics:
+
+  rcbi:
+    label: "RCBI"
+    emoji: "🛂"
+    keywords:
+      - citizenship by investment
+      - residence by investment
+      - residency by investment
+      - golden visa
+      - golden passport
+      - investor visa
+      - investment migration
+      - EB-5
+      - second citizenship
+    # Optional: full Google News searches for when a single phrase isn't enough.
+    extra_google_queries:
+      - '"gold card" (visa OR immigration OR residency)'
+
+  wealth_management:
+    label: "Wealth management"
+    emoji: "💼"
+    keywords:
+      - family office
+      - wealth management
+      - private banking
+      - ultra-high-net-worth
+      - high-net-worth individuals
+      - millionaire migration
+      - wealth migration
+
+  wealth_tax:
+    label: "Wealth taxation"
+    emoji: "🏛️"
+    keywords:
+      - wealth tax
+      - exit tax
+      - non-dom
+      - billionaire tax
+      - millionaire tax
+      - inheritance tax
+      - Zucman tax
+    extra_google_queries:
+      - '"flat tax" (wealthy OR "new residents" OR millionaires)'
+
+
+# ── 2. WHAT COUNTS AS NEWS ───────────────────────────────────────────────────
+# Claude reads every new item and decides, using these instructions, whether to
+# alert you. Write them the way you'd brief a colleague. This is the most
+# useful thing to tune: if you get junk, add it to "Don't alert me about".
+what_matters: |
+  I follow the investment migration industry (residence and citizenship by
+  investment, "RCBI") and the wealth-management and wealth-tax news around it.
+
+  Alert me about:
+  - RCBI: programme launches, suspensions, closures, changes to rules, prices
+    or fees, government announcements, application or approval statistics,
+    court rulings, EU/US/OECD pressure, scandals and investigations, and major
+    industry deals or reports.
+  - Wealth management: wealthy individuals or families relocating, family
+    office and private banking moves or regulation, and notable reports on
+    millionaire migration.
+  - Wealth taxation: proposals, votes, approvals or changes to wealth, exit,
+    inheritance, non-dom or billionaire taxes; special tax regimes for new
+    residents; wealthy people leaving a country because of tax.
+
+  Don't alert me about:
+  - Ads, sponsored content, or promotional "get your golden visa" pages
+  - Listicles and generic explainers with no new development
+  - Generic investing or personal-finance tips, fund performance, or routine
+    earnings of wealth managers (unless it is a major deal or new regulation)
+  - Opinion pieces that only rehash old news
+  - Items that mention a keyword only in passing
+
+# Only alert for items Claude scores at least this important (1 to 5):
+#   5 = major breaking news, 4 = clearly newsworthy, 3 = worth a look, 2 = minor
+# Raise to 4 if you get too many alerts; lower to 2 if you want everything.
+min_importance: 3
+
+
+# ── 3. WHERE TO LOOK ─────────────────────────────────────────────────────────
+
+google_news:
+  enabled: true
+  # Google News editions to search. "US:en" already covers most English-language
+  # outlets worldwide. Add "GB:en" for more UK coverage, or e.g. "PT:pt-150"
+  # (Portugal, Portuguese) if you also add Portuguese keywords.
+  editions: ["US:en"]
+
+reddit:
+  enabled: true
+  # Reddit is switching off all RSS feeds on 13 November 2026, so the radar stops
+  # trying after this date. Reddit also blocks some cloud servers; if it fails
+  # repeatedly, you'll get one warning on Telegram. Free alternative: f5bot.com
+  stop_after: 2026-11-13
+
+x:
+  # X (Twitter) charges about $0.005 for every post the radar reads.
+  # Broad keywords can cost $100+ a month, so keep searches narrow; the
+  # cheapest option is watching specific accounts with "from:".
+  # To turn on: set enabled to true and add an X_BEARER_TOKEN secret on GitHub.
+  enabled: false
+  queries:
+    - '("golden visa" OR "citizenship by investment" OR "investor visa") -is:retweet lang:en'
+    # Example of watching specific accounts only (replace with real handles):
+    # - '(from:handle_one OR from:handle_two) -is:retweet'
+  max_posts_per_check: 10   # per search, per check (10 to 100)
+
+# Any other RSS/Atom feeds: a government press-release page, an industry site,
+# or a Google Alert set to "Deliver to: RSS feed" (this also catches blogs and
+# sites that Google News misses).
+# filter_keywords: true  → only keep items that mention one of your keywords
+# filter_keywords: false → send every item to Claude (use for targeted feeds)
+rss_feeds: []
+  # - name: "My Google Alert: golden visa"
+  #   url: "https://www.google.com/alerts/feeds/XXXXXXXX/YYYYYYYY"
+  #   filter_keywords: false
+  # - name: "Some ministry press releases"
+  #   url: "https://example.gov/press/rss"
+  #   filter_keywords: true
+
+
+# ── 4. ADVANCED ──────────────────────────────────────────────────────────────
+settings:
+  ai_model: "claude-haiku-5-5"   # small, fast and cheap; good enough for triage
+  max_age_hours: 24              # ignore anything published longer ago than this
+  max_alerts_per_check: 10       # beyond this, extras are bundled into one message
+  warn_after_failures: 8         # warn on Telegram after this many failed checks in a row (8 ≈ 2 hours)
