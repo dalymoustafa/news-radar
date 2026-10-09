@@ -91,6 +91,18 @@ what_matters: |
 # Raise to 4 if you get too many alerts; lower to 2 if you want everything.
 min_importance: 3
 
+# Skip stories your own publication has already covered. On every check the
+# radar reads these feeds and won't alert you about a story that's already
+# there, unless the new item adds a genuinely new development. Articles from
+# these outlets themselves are skipped too.
+already_covered:
+  enabled: true
+  name: "IMI Daily"
+  feeds:
+    - "https://www.imidaily.com/feed/"
+  outlet_names: ["IMI Daily", "Investment Migration Insider"]
+  lookback_days: 5     # how far back to look at what you've already published
+
 
 # ── 3. WHERE TO LOOK ─────────────────────────────────────────────────────────
 

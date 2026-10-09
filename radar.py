@@ -293,6 +293,46 @@ def fetch_rss_feeds(cfg: dict) -> list[SourceResult]:
     return results
 
 
+def fetch_already_covered(cfg: dict) -> tuple[list[str], SourceResult | None]:
+    """Headlines your own publication has already run, so Claude can skip those stories."""
+    ac = cfg.get("already_covered") or {}
+    if not ac.get("enabled") or not ac.get("feeds"):
+        return [], None
+    res = SourceResult(f"{ac.get('name') or 'Your publication'} feed")
+    cutoff = now() - dt.timedelta(days=float(ac.get("lookback_days", 5)))
+    titles: list[str] = []
+    for url in ac["feeds"]:
+        for page in range(1, 6):  # WordPress feeds show ~10 posts per page
+            if page == 1:
+                res.requests_made += 1
+            try:
+                r = http_get(url, params={"paged": page} if page > 1 else None)
+            except Exception as e:  # noqa: BLE001
+                if page == 1:
+                    res.errors.append(f"{url}: {e}")
+                break  # a missing later page just means we've reached the end
+            entries = feedparser.parse(r.content).entries
+            recent = [e for e in entries if not entry_time(e) or entry_time(e) >= cutoff]
+            titles += [clean(e.get("title"))[:160] for e in recent if e.get("title")]
+            if len(recent) < len(entries) or len(entries) < 5:
+                break
+            time.sleep(0.3)
+    log(f"{res.name}: {len(titles)} recent headlines ({'ok' if res.ok else 'FAILED'})")
+    for err in res.errors[:2]:
+        log(f"   ! {err}")
+    return list(dict.fromkeys(titles))[:120], res
+
+
+def from_own_outlet(it: Item, cfg: dict) -> bool:
+    ac = cfg.get("already_covered") or {}
+    if not ac.get("enabled"):
+        return False
+    names = [str(n).lower() for n in (ac.get("outlet_names") or [])]
+    domains = [urlparse(u).netloc.lower().removeprefix("www.") for u in (ac.get("feeds") or [])]
+    outlet, host = (it.outlet or "").lower(), urlparse(it.url or "").netloc.lower()
+    return any(n and n in outlet for n in names) or any(d and (d in host or d == outlet) for d in domains)
+
+
 def collect(cfg: dict, state: dict) -> list[SourceResult]:
     results = [fetch_google_news(cfg), fetch_reddit(cfg), fetch_x(cfg, state)]
     results = [r for r in results if r is not None] + fetch_rss_feeds(cfg)
@@ -328,6 +368,9 @@ newsworthy; 3 = worth a look; 2 = minor or background; 1 = irrelevant.
 authoritative or original source) and set same_story_as on the others to its id.
 - If an item reports a story listed under "Already sent", set same_story_as to "SENT" \
 unless it adds a materially new development.
+- If an item reports a story listed under "Already covered by", the reader's own \
+publication has already published it: set same_story_as to "COVERED" unless the item adds \
+a materially new development (new figures, a decision, a reversal, a new country).
 - headline: a clear, factual English headline (translate if needed, no hype).
 - summary: one English sentence on what happened and why it matters to the reader.
 - country: the main country or jurisdiction involved, or "" if global or none.
@@ -373,7 +416,8 @@ def describe(item_id: str, it: Item) -> str:
     return "\n".join(lines)
 
 
-def classify(items: list[Item], cfg: dict, state: dict, use_ai: bool) -> tuple[dict[int, dict], list[str]]:
+def classify(items: list[Item], cfg: dict, state: dict, use_ai: bool,
+             covered: list[str] | None = None) -> tuple[dict[int, dict], list[str]]:
     """Returns ({index in items: verdict}, errors). Items in failed batches get no verdict."""
     if not items:
         return {}, []
@@ -390,6 +434,10 @@ def classify(items: list[Item], cfg: dict, state: dict, use_ai: bool) -> tuple[d
                                   topics=", ".join(topic_keys))
     sent = [a["h"] for a in state.get("alerted", [])][-60:]
     sent_text = "\n".join(f"- {h}" for h in sent) if sent else "(nothing yet)"
+    if covered:
+        pub = (cfg.get("already_covered") or {}).get("name") or "the reader's publication"
+        sent_text += (f"\n\nAlready covered by {pub} (the reader's own publication):\n"
+                      + "\n".join(f"- {h}" for h in covered))
     model = (cfg.get("settings") or {}).get("ai_model", "claude-haiku-5-5")
 
     verdicts, errors = {}, []
@@ -425,7 +473,7 @@ def pick_alerts(items: list[Item], verdicts: dict[int, dict], min_importance: in
     """Choose what to send. Same-story items are folded into one alert ("Also: …")."""
     keep = {i: v for i, v in verdicts.items()
             if v.get("relevant") and int(v.get("importance", 1)) >= min_importance
-            and str(v.get("same_story_as", "")).upper() != "SENT"}
+            and str(v.get("same_story_as", "")).upper() not in ("SENT", "COVERED")}
     also: dict[int, list[str]] = {}
     for i, v in list(keep.items()):
         ref = str(v.get("same_story_as") or "").strip().strip("[]").lower().removeprefix("i")
@@ -637,8 +685,9 @@ def main() -> int:
 
     threshold = int(settings.get("warn_after_failures", 8))
     sources = collect(cfg, state)
+    covered, covered_src = fetch_already_covered(cfg)
     if not setup:
-        for s in sources:
+        for s in sources + ([covered_src] if covered_src else []):
             track_health(s.name, s.ok, "; ".join(s.errors[:2]), state, tg, threshold)
 
     # keep fresh items we haven't handled before (also drops duplicates within this check)
@@ -646,6 +695,8 @@ def main() -> int:
     fresh, keys_now = [], set()
     for it in (i for s in sources for i in s.items):
         if it.published and now() - it.published > max_age:
+            continue
+        if from_own_outlet(it, cfg):
             continue
         ks = it.keys()
         if any((not setup and k in state["seen"]) or k in keys_now for k in ks):
@@ -657,7 +708,7 @@ def main() -> int:
 
     min_imp = int(cfg.get("min_importance", 3))
     if setup:
-        verdicts, errors = classify(fresh[:FIRST_RUN_PREVIEW], cfg, state, use_ai)
+        verdicts, errors = classify(fresh[:FIRST_RUN_PREVIEW], cfg, state, use_ai, covered)
         for e in errors[:2]:
             log(f"Claude error: {e}")
         ai_ok = bool(verdicts) or not errors
@@ -694,7 +745,7 @@ def main() -> int:
         state["intro_sent"] = True
     else:
         batch = fresh[:MAX_ITEMS_PER_CHECK]
-        verdicts, errors = classify(batch, cfg, state, use_ai)
+        verdicts, errors = classify(batch, cfg, state, use_ai, covered)
         if use_ai:
             track_health("Claude (AI filter)", not errors or bool(verdicts), "; ".join(errors[:1]),
                          state, tg, max(2, threshold // 2))
