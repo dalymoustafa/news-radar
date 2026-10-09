@@ -384,7 +384,8 @@ def classify(items: list[Item], cfg: dict, state: dict, use_ai: bool) -> tuple[d
 
     import anthropic  # imported here so --no-ai works without the package
 
-    client = anthropic.Anthropic()
+    # strip stray spaces/line breaks that often sneak in when a key is pasted
+    client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", "").strip())
     system = SYSTEM_PROMPT.format(brief=cfg.get("what_matters", "").strip(),
                                   topics=", ".join(topic_keys))
     sent = [a["h"] for a in state.get("alerted", [])][-60:]
@@ -406,7 +407,11 @@ def classify(items: list[Item], cfg: dict, state: dict, use_ai: bool) -> tuple[d
                 messages=[{"role": "user", "content": prompt}],
             )
         except Exception as e:  # noqa: BLE001
-            errors.append(f"{type(e).__name__}: {e}")
+            msg = f"{type(e).__name__}: {e}"
+            cause = e.__cause__ or e.__context__
+            if cause:
+                msg += f" ({type(cause).__name__}: {str(cause)[:150]})"
+            errors.append(msg)
             continue
         out = next((b.input for b in resp.content if b.type == "tool_use"), {}) or {}
         got = {str(v.get("id")): v for v in out.get("items", []) if isinstance(v, dict)}
@@ -613,21 +618,26 @@ def main() -> int:
     cfg = load_config()
     settings = cfg.get("settings") or {}
     tz = ZoneInfo(cfg.get("timezone") or "UTC")
-    state = load_state()
-    first_run = state is None
-    state = state or {"seen": {}, "alerted": [], "failures": {}}
+    state = load_state() or {"seen": {}, "alerted": [], "failures": {}}
+    # "Setup" lasts until the first check where Claude actually reviews items: that check
+    # sends the welcome preview (top stories of the last 24 hours) and starts a clean slate.
+    setup = not state.get("setup_done")
+    intro_sent = bool(state.get("intro_sent") or state.get("last_run"))
     use_ai = not args.no_ai
 
-    if use_ai and not os.environ.get("ANTHROPIC_API_KEY"):
+    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if use_ai and not key:
         log("ANTHROPIC_API_KEY is missing. Add it as a repository secret (see README).")
         return 1
+    if use_ai and not key.startswith("sk-ant-"):
+        log("Warning: ANTHROPIC_API_KEY doesn't start with 'sk-ant-'. Check you pasted the Claude key.")
     tg = Telegram(state, args.dry_run)
     if not tg.ready():
         return 1
 
     threshold = int(settings.get("warn_after_failures", 8))
     sources = collect(cfg, state)
-    if not first_run:
+    if not setup:
         for s in sources:
             track_health(s.name, s.ok, "; ".join(s.errors[:2]), state, tg, threshold)
 
@@ -638,7 +648,7 @@ def main() -> int:
         if it.published and now() - it.published > max_age:
             continue
         ks = it.keys()
-        if any(k in state["seen"] or k in keys_now for k in ks):
+        if any((not setup and k in state["seen"]) or k in keys_now for k in ks):
             continue
         keys_now.update(ks)
         fresh.append(it)
@@ -646,28 +656,42 @@ def main() -> int:
     log(f"{len(fresh)} new items to review")
 
     min_imp = int(cfg.get("min_importance", 3))
-    if first_run:
+    if setup:
         verdicts, errors = classify(fresh[:FIRST_RUN_PREVIEW], cfg, state, use_ai)
-        picks = pick_alerts(fresh, verdicts, min_imp)[:5]
-        n_searches = sum(len(t.get("keywords") or []) + len(t.get("extra_google_queries") or [])
-                         for t in cfg["topics"].values())
-        names = [s.name for s in sources]
-        where = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
-        intro = (f"✅ <b>Your news radar is live.</b>\nWatching {n_searches} searches on {esc(where)}. "
-                 "From now on you'll get a message here shortly after a relevant story appears.")
-        for s in sources:
-            if not s.ok:
-                intro += (f"\n\n⚠️ {esc(s.name)} couldn't be reached on this check: "
-                          f"<i>{esc((s.errors or ['unknown error'])[0][:200])}</i>")
-        if errors:
-            intro += f"\n\n⚠️ Claude couldn't review items yet: <i>{esc(errors[0][:200])}</i>"
-        elif picks:
-            intro += "\n\nHere's what it would have flagged from the last 24 hours:"
+        for e in errors[:2]:
+            log(f"Claude error: {e}")
+        ai_ok = bool(verdicts) or not errors
+        if not intro_sent:
+            n_searches = sum(len(t.get("keywords") or []) + len(t.get("extra_google_queries") or [])
+                             for t in cfg["topics"].values())
+            names = [s.name for s in sources]
+            where = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+            intro = (f"✅ <b>Your news radar is live.</b>\nWatching {n_searches} searches on {esc(where)}. "
+                     "From now on you'll get a message here shortly after a relevant story appears.")
+            for s in sources:
+                if not s.ok:
+                    intro += (f"\n\n⚠️ {esc(s.name)} couldn't be reached on this check: "
+                              f"<i>{esc((s.errors or ['unknown error'])[0][:200])}</i>")
         else:
-            intro += "\n\nNothing from the last 24 hours met your bar, so it'll stay quiet until something does."
-        tg.send(intro)
-        send_alerts(picks, tg, cfg, tz, state)
-        mark_seen(state, fresh)  # start with a clean slate
+            intro = "✅ <b>Claude is connected, so your news radar is fully working.</b>" if ai_ok else ""
+        if ai_ok:
+            picks = pick_alerts(fresh, verdicts, min_imp)[:5]
+            if picks:
+                intro += "\n\nHere's what it would have flagged from the last 24 hours:"
+            else:
+                intro += "\n\nNothing from the last 24 hours met your bar, so it'll stay quiet until something does."
+            tg.send(intro)
+            send_alerts(picks, tg, cfg, tz, state)
+            mark_seen(state, fresh)  # start with a clean slate
+            state["setup_done"] = True
+            state.setdefault("failures", {})["Claude (AI filter)"] = 0
+        else:
+            if intro:
+                intro += (f"\n\n⚠️ Claude couldn't review items yet: <i>{esc(errors[0][:250])}</i>\n"
+                          "It will keep trying on every check and send you the top stories once it connects.")
+                tg.send(intro)
+            track_health("Claude (AI filter)", False, errors[0], state, tg, max(2, threshold // 2))
+        state["intro_sent"] = True
     else:
         batch = fresh[:MAX_ITEMS_PER_CHECK]
         verdicts, errors = classify(batch, cfg, state, use_ai)
